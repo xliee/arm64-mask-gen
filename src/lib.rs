@@ -406,12 +406,14 @@ where
         }
     }
 
-    // Heuristic: for branch immediates (B/BL), imm26 field varies entirely when wildcard is present
+    // Heuristic: for branch immediates, immediate fields vary entirely when wildcard is present
     let has_imm_wildcard = t.imms.iter().any(|im| matches!(im.spec, ImmSpec::Any | ImmSpec::Range { .. } | ImmSpec::BitmaskAny));
     if has_imm_wildcard {
         let m = mnemonic.to_ascii_lowercase();
         if m == "bl" || m == "b" { 
-            varying |= 0x03FF_FFFF; // 26-bit immediate field for branch instructions
+            varying |= 0x03FF_FFFF; // 26-bit immediate field for B/BL instructions
+        } else if m == "cbz" || m == "cbnz" || m == "tbz" || m == "tbnz" {
+            varying |= 0x00FF_FFE0; // 19-bit immediate field for CBZ/CBNZ/TBZ/TBNZ instructions
         }
     }
     let stable = !varying;
