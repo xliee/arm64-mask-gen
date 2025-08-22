@@ -4,6 +4,9 @@
 use anyhow::{Result, ensure};
 use regex::Regex;
 
+#[cfg(feature = "keystone")]
+use keystone_engine::{Keystone, Arch, Mode};
+
 #[derive(Debug, Clone)]
 pub enum RegSpec {
     AnyGpr(bool /*is64*/),
@@ -432,6 +435,27 @@ where
         msk.push(std::char::from_digit(low_m as u32, 16).unwrap());
     }
     Ok((pat, msk))
+}
+
+/// Helper function to create a Keystone assembler for AArch64
+#[cfg(feature = "keystone")]
+pub fn create_keystone_assembler() -> Result<impl Fn(&str) -> Result<Vec<u8>>> {
+    let engine = Keystone::new(Arch::ARM64, Mode::LITTLE_ENDIAN)
+        .map_err(|e| anyhow::anyhow!("Failed to create Keystone engine: {}", e))?;
+    
+    Ok(move |asm: &str| {
+        engine.asm(asm.to_string(), 0)
+            .map(|result| result.bytes)
+            .map_err(|e| anyhow::anyhow!("Assembly failed: {}", e))
+    })
+}
+
+/// Convenience function to generate pattern:mask using Keystone assembler
+#[cfg(feature = "keystone")]
+pub fn make_r2_mask_with_keystone(template: &str) -> Result<(String, String)> {
+    let parsed = parse_template(template);
+    let assembler = create_keystone_assembler()?;
+    make_r2_mask_for_a64_template(&parsed, assembler)
 }
 
 #[cfg(test)]
