@@ -226,9 +226,24 @@ fn base_reg_token(rs: &RegSpec) -> String {
     }
 }
 
-fn base_imm_token(is: &ImmSpec) -> String {
+fn base_imm_token(is: &ImmSpec, mnemonic: &str, imm_index: usize) -> String {
     match is {
-        ImmSpec::Any | ImmSpec::Range { .. } => "#0".into(),
+        ImmSpec::Any | ImmSpec::Range { .. } => {
+            let m = mnemonic.to_ascii_lowercase();
+            if (m == "bfi" || m == "bfxil") && imm_index == 1 {
+                "#1".into()
+            } else if (m == "bfc") && imm_index == 0 {
+                "#0".into()  
+            } else if (m == "bfc") && imm_index == 1 {
+                "#1".into()
+            } else if (m == "sbfm" || m == "ubfm" || m == "bfm") && imm_index == 1 {
+                "#1".into()
+            } else if (m.starts_with("ldr") || m.starts_with("str")) && m.contains("uxtw") {
+                "#0".into()
+            } else {
+                "#0".into()
+            }
+        },
         ImmSpec::Fixed(v) => format!("#{v}"),
         ImmSpec::BitmaskAny => "#0xFF00FF00FF00FF00".into(),
     }
@@ -247,8 +262,8 @@ where
             base = repl_once(&base, &o.placeholder, &rep);
         }
     }
-    for o in &t.imms {
-        let rep = base_imm_token(&o.spec);
+    for (imm_idx, o) in t.imms.iter().enumerate() {
+        let rep = base_imm_token(&o.spec, mnemonic, imm_idx);
         while base.contains(&o.placeholder) {
             base = repl_once(&base, &o.placeholder, &rep);
         }
@@ -264,9 +279,18 @@ where
         match spec {
             RegSpec::AnyGpr(is64) => {
                 let prefix = if *is64 { 'X' } else { 'W' };
-                // Cover each bit position plus a high value
-                for v in [1u8, 2, 4, 8, 16, 30] {
-                    out.push(format!("{prefix}{v}"));
+                // Systematically cover all bit positions in 5-bit register field
+                for bit in 0..5 {
+                    let v = 1u8 << bit;
+                    if v <= 30 {
+                        out.push(format!("{prefix}{v}"));
+                    }
+                }
+                // Add combinations of bits to exercise encoding patterns
+                for combo in 1..32u8 {
+                    if combo <= 30 && combo.count_ones() <= 3 { // Limit to reasonable combinations
+                        out.push(format!("{prefix}{combo}"));
+                    }
                 }
             }
             RegSpec::Range { is64, lo, hi } => {
@@ -300,15 +324,52 @@ where
         let mut out = Vec::new();
         match spec {
             ImmSpec::Any => {
-                // Generic set hits low bits and high bits
-                out.extend(["#1".to_string(), "#0xFF".to_string(), "#0xFFF".to_string()]);
                 let m = mnemonic.to_ascii_lowercase();
-                if m.starts_with("ldr")
-                    || m.starts_with("str")
-                    || m.starts_with("ldur")
-                    || m.starts_with("stur")
-                {
-                    out.push("#0x100".into()); // exercise scaled field
+                
+                // Special handling for load/store with extend operations
+                if (m.starts_with("ldr") || m.starts_with("str")) && m.contains("uxtw") {
+                    if m.contains("ldrsw") || m.contains("strw") {
+                        out.extend(["#0".to_string(), "#2".to_string()]);
+                    } else if m.contains("ldrh") || m.contains("strh") {
+                        out.extend(["#0".to_string(), "#1".to_string()]);
+                    } else if m.contains("ldrb") || m.contains("strb") {
+                        out.extend(["#0".to_string()]);
+                    } else {
+                        out.extend(["#0".to_string(), "#3".to_string()]);
+                    }
+                } else {
+                    // Generic approach: systematically test powers of 2 to discover bit fields
+                    out.extend(["#0".to_string(), "#1".to_string()]);
+                    
+                    for bit in 1..16 {
+                        let val = 1u64 << bit;
+                        out.push(format!("#{}", val));
+                        if bit < 12 {
+                            out.push(format!("#{}", val | 1));
+                            out.push(format!("#{}", val | (1 << (bit/2))));
+                        }
+                    }
+                    
+                    out.extend([
+                        "#0xFF".to_string(),
+                        "#0xFFF".to_string(),
+                        "#0x3FFF".to_string(),
+                    ]);
+                    
+                    if m.starts_with("ldr")
+                        || m.starts_with("str")
+                        || m.starts_with("ldur")
+                        || m.starts_with("stur")
+                    {
+                        for scale in [0, 1, 2, 3] {
+                            for base in [1, 3, 5, 7, 15, 31, 63, 127, 255] {
+                                let val = base << scale;
+                                if val <= 0xFFF {
+                                    out.push(format!("#{}", val));
+                                }
+                            }
+                        }
+                    }
                 }
             }
             ImmSpec::Range { lo, hi, step, .. } => {
@@ -356,9 +417,9 @@ where
                     asm_line = repl_once(&asm_line, &r.placeholder, &rep);
                 }
             }
-            for im in &t.imms {
+            for (imm_idx, im) in t.imms.iter().enumerate() {
                 // base imm tokens
-                let rep = base_imm_token(&im.spec);
+                let rep = base_imm_token(&im.spec, mnemonic, imm_idx);
                 while asm_line.contains(&im.placeholder) {
                     asm_line = repl_once(&asm_line, &im.placeholder, &rep);
                 }
@@ -372,8 +433,8 @@ where
         }
     }
     // Immediate placeholders variation accumulation
-    for o in &t.imms {
-        let base_token = base_imm_token(&o.spec);
+    for (outer_imm_idx, o) in t.imms.iter().enumerate() {
+        let base_token = base_imm_token(&o.spec, mnemonic, outer_imm_idx);
         let candidates = imm_candidates(&o.spec, mnemonic);
         for cand in candidates {
             if cand == base_token {
@@ -387,11 +448,11 @@ where
                     asm_line = repl_once(&asm_line, &r.placeholder, &rep);
                 }
             }
-            for im in &t.imms {
+            for (inner_imm_idx, im) in t.imms.iter().enumerate() {
                 let rep = if im.placeholder == o.placeholder {
                     cand.clone()
                 } else {
-                    base_imm_token(&im.spec)
+                    base_imm_token(&im.spec, mnemonic, inner_imm_idx)
                 };
                 while asm_line.contains(&im.placeholder) {
                     asm_line = repl_once(&asm_line, &im.placeholder, &rep);
@@ -411,9 +472,13 @@ where
     if has_imm_wildcard {
         let m = mnemonic.to_ascii_lowercase();
         if m == "bl" || m == "b" { 
-            varying |= 0x03FF_FFFF; // 26-bit immediate field for B/BL instructions
+            varying |= 0x03FF_FFFF;
         } else if m == "cbz" || m == "cbnz" || m == "tbz" || m == "tbnz" {
-            varying |= 0x00FF_FFE0; // 19-bit immediate field for CBZ/CBNZ/TBZ/TBNZ instructions
+            varying |= 0x00FF_FFE0;
+        } else if m == "movk" || m == "movz" || m == "movn" {
+            varying |= 0x006F_FFE0;
+        } else if (m.starts_with("ldr") || m.starts_with("str")) && !m.contains("uxtw") {
+            varying |= 0x003F_FC00;
         }
     }
     let stable = !varying;
