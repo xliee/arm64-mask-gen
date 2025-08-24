@@ -92,3 +92,9 @@ Licensed under the MIT License. See [LICENSE](LICENSE) for details.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Integrations
+
+- [`arm64-mask-gen-python-wrapper`](https://github.com/xliee/arm64-mask-gen-py-wrapper) — a PyO3 wrapper that exposes a Python module `arm64_mask_gen_py`. Build with `maturin` and enable the `keystone` feature if you want assembler support.
+- [`ida_mask_plugin`](https://github.com/xliee/ida_mask_plugin) — an IDA Pro plugin (Python) which uses the Python wrapper to generate `pattern:mask` pairs from assembly snippets and perform masked searches inside an IDB.
+
